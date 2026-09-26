@@ -22,8 +22,9 @@ import {
   Tooltip
 } from '@radix-ui/themes';
 import { buildVersionOptions, diffVersions } from './diff';
+import { executionRunKey, useExecutionStore } from './execution';
 import { useChecklistStore } from './store';
-import type { ChecklistItem, ChecklistProject, IssueLevel, ValidationIssue, WorkflowStatus } from './types';
+import type { ChecklistItem, ChecklistProject, FlightStage, IssueLevel, ValidationIssue, WorkflowStatus } from './types';
 import { validateProject } from './validation';
 
 const statusMeta: Record<WorkflowStatus, { label: string; color: 'gray' | 'amber' | 'green'; description: string }> = {
@@ -38,12 +39,24 @@ const issueMeta: Record<IssueLevel, { color: 'red' | 'amber' | 'blue'; label: st
   info: { color: 'blue', label: '提示' }
 };
 
+interface FrozenVersion {
+  key: string;
+  revision: number;
+  label: string;
+  stages: FlightStage[];
+  items: ChecklistItem[];
+  note: string;
+}
+
+const formatTime = (iso: string) => new Date(iso).toLocaleString('zh-CN', { hour12: false });
+
 function escapeHtml(value: string): string {
   return value.replace(/[&<>'"]/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[character] ?? character);
 }
 
 function App() {
   const store = useChecklistStore();
+  const executionStore = useExecutionStore();
   const project = store.selectedProject;
   const [appearance, setAppearance] = useState<'light' | 'dark'>(() => (localStorage.getItem('sologsb-1030-theme') === 'dark' ? 'dark' : 'light'));
   const [search, setSearch] = useState('');
@@ -58,6 +71,7 @@ function App() {
   const [freezeNote, setFreezeNote] = useState('');
   const [leftVersion, setLeftVersion] = useState('current');
   const [rightVersion, setRightVersion] = useState(project.revisions[0]?.id ?? '');
+  const [execVersionKey, setExecVersionKey] = useState('');
   const [savePulse, setSavePulse] = useState(false);
   const challengeRef = useRef<HTMLInputElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -68,6 +82,39 @@ function App() {
   const selectedItem = project.items.find((item) => item.id === selectedItemId);
   const versionOptions = useMemo(() => buildVersionOptions(project), [project]);
   const diffEntries = useMemo(() => diffVersions(project, leftVersion, rightVersion), [project, leftVersion, rightVersion]);
+  const frozenVersions = useMemo<FrozenVersion[]>(() => {
+    const versions: FrozenVersion[] = [];
+    const currentIsSnapshotted = project.revisions.some((revision) => revision.revision === project.revision);
+    if (project.status === 'frozen' && !currentIsSnapshotted) {
+      versions.push({
+        key: 'current',
+        revision: project.revision,
+        label: `当前 r${project.revision} · 已冻结`,
+        stages: project.stages,
+        items: project.items,
+        note: project.reviewNote
+      });
+    }
+    project.revisions.forEach((revision) => {
+      const isCurrent = project.status === 'frozen' && revision.revision === project.revision;
+      versions.push({
+        key: revision.id,
+        revision: revision.revision,
+        label: `r${revision.revision} · ${new Date(revision.createdAt).toLocaleDateString('zh-CN')} 冻结${isCurrent ? ' · 当前版本' : ''}`,
+        stages: revision.stages,
+        items: revision.items,
+        note: revision.note
+      });
+    });
+    return versions;
+  }, [project]);
+  const execSummary = useMemo(() => {
+    const version = frozenVersions.find((entry) => entry.key === execVersionKey) ?? frozenVersions[0];
+    if (!version) return null;
+    const run = executionStore.executions.runs[executionRunKey(project.id, version.revision)];
+    const decided = run ? version.items.filter((item) => run.entries[item.id]).length : 0;
+    return { decided, total: version.items.length };
+  }, [frozenVersions, execVersionKey, executionStore.executions, project.id]);
   const filteredStages = useMemo(() => {
     const query = search.trim().toLocaleLowerCase('zh-CN');
     return project.stages
@@ -89,6 +136,10 @@ function App() {
     if (!versionOptions.some((option) => option.id === leftVersion)) setLeftVersion('current');
     if (!versionOptions.some((option) => option.id === rightVersion)) setRightVersion(versionOptions[1]?.id ?? '');
   }, [project.id, project.items, project.stages, project.revision, selectedItemId, quickStageId, versionOptions, leftVersion, rightVersion]);
+
+  useEffect(() => {
+    if (!frozenVersions.some((entry) => entry.key === execVersionKey)) setExecVersionKey(frozenVersions[0]?.key ?? '');
+  }, [frozenVersions, execVersionKey]);
 
   useEffect(() => {
     localStorage.setItem('sologsb-1030-theme', appearance);
@@ -238,6 +289,7 @@ function App() {
             {project.status === 'draft' && <Button color="amber" onClick={store.submitForReview} disabled={errors > 0}>提交复核</Button>}
             {project.status === 'review' && <Button color="green" onClick={() => setFreezeOpen(true)} disabled={errors > 0}>复核通过并冻结</Button>}
             {project.status === 'frozen' && <Button onClick={store.createRevision}>创建修订 r{project.revision + 1}</Button>}
+            <Button variant="soft" onClick={() => setActiveTab('execute')}>执行检查单</Button>
             <Button variant="soft" onClick={() => setShowPreview(true)}>只读预览</Button>
             <Button variant="soft" onClick={() => window.print()}>打印</Button>
             <Button variant="soft" onClick={exportPrintableHtml}>导出打印版</Button>
@@ -248,9 +300,14 @@ function App() {
           <Tabs.Root value={activeTab} onValueChange={setActiveTab}>
             <Tabs.List className="main-tabs">
               <Tabs.Trigger value="editor">编辑清单</Tabs.Trigger>
+              <Tabs.Trigger value="execute">执行检查单 {execSummary && <Badge size="1" variant="soft" color={execSummary.total > 0 && execSummary.decided === execSummary.total ? 'green' : 'blue'}>{execSummary.decided}/{execSummary.total}</Badge>}</Tabs.Trigger>
               <Tabs.Trigger value="versions">版本差异 <Badge size="1" variant="soft">{project.revisions.length}</Badge></Tabs.Trigger>
               <Tabs.Trigger value="print">打印预览</Tabs.Trigger>
             </Tabs.List>
+
+            <Tabs.Content value="execute">
+              <ExecutionPanel project={project} versions={frozenVersions} versionKey={execVersionKey} onVersionChange={setExecVersionKey} store={executionStore} />
+            </Tabs.Content>
 
             <Tabs.Content value="editor">
               <div className="editor-grid">
@@ -479,6 +536,210 @@ function App() {
         </Dialog.Content>
       </Dialog.Root>
     </Theme>
+  );
+}
+
+interface ExecutionPanelProps {
+  project: ChecklistProject;
+  versions: FrozenVersion[];
+  versionKey: string;
+  onVersionChange: (key: string) => void;
+  store: ReturnType<typeof useExecutionStore>;
+}
+
+function ExecutionPanel({ project, versions, versionKey, onVersionChange, store }: ExecutionPanelProps) {
+  const version = versions.find((entry) => entry.key === versionKey) ?? versions[0];
+  const [skipOpen, setSkipOpen] = useState(false);
+  const [skipReason, setSkipReason] = useState('');
+
+  const runKey = version ? executionRunKey(project.id, version.revision) : '';
+  const run = runKey ? store.executions.runs[runKey] : undefined;
+  const entries = run?.entries;
+
+  const orderedItems = useMemo<Array<{ stage: FlightStage; item: ChecklistItem }>>(() => {
+    if (!version) return [];
+    return version.stages
+      .slice()
+      .sort((a, b) => a.order - b.order)
+      .flatMap((stage) => version.items
+        .filter((item) => item.stageId === stage.id)
+        .sort((a, b) => a.order - b.order)
+        .map((item) => ({ stage, item })));
+  }, [version]);
+
+  const currentIndex = orderedItems.findIndex(({ item }) => !entries?.[item.id]);
+  const currentItemId = currentIndex >= 0 ? orderedItems[currentIndex].item.id : '';
+
+  useEffect(() => {
+    setSkipOpen(false);
+    setSkipReason('');
+  }, [runKey, currentItemId]);
+
+  if (!version) {
+    return (
+      <div className="content-page">
+        <div className="empty-page">
+          <strong>还没有可执行的冻结版本</strong>
+          <span>完成「编辑 → 提交复核 → 冻结」后，即可在这里按阶段顺序执行检查单；执行记录按版本单独保存，关闭浏览器后可以继续。</span>
+        </div>
+      </div>
+    );
+  }
+
+  const total = orderedItems.length;
+  const doneCount = orderedItems.filter(({ item }) => entries?.[item.id]?.status === 'done').length;
+  const skippedCount = orderedItems.filter(({ item }) => entries?.[item.id]?.status === 'skipped').length;
+  const finished = total > 0 && currentIndex === -1;
+  const current = currentIndex >= 0 ? orderedItems[currentIndex] : undefined;
+  let lastDecidedIndex = -1;
+  orderedItems.forEach((entry, index) => { if (entries?.[entry.item.id]) lastDecidedIndex = index; });
+  const unmetPreconditions = current
+    ? current.item.preconditionIds
+      .map((id) => version.items.find((item) => item.id === id))
+      .filter((item): item is ChecklistItem => Boolean(item))
+      .filter((item) => entries?.[item.id]?.status !== 'done')
+    : [];
+  const blocked = unmetPreconditions.length > 0;
+  const sortedStages = version.stages.slice().sort((a, b) => a.order - b.order);
+
+  function confirmCurrent() {
+    if (!current || blocked) return;
+    store.markItem(runKey, project.id, version.revision, current.item.id, 'done');
+  }
+
+  function confirmSkip() {
+    if (!current || !skipReason.trim()) return;
+    store.markItem(runKey, project.id, version.revision, current.item.id, 'skipped', skipReason.trim());
+    setSkipOpen(false);
+    setSkipReason('');
+  }
+
+  function revertLast() {
+    if (lastDecidedIndex < 0) return;
+    store.clearEntry(runKey, project.id, version.revision, orderedItems[lastDecidedIndex].item.id);
+  }
+
+  function restart() {
+    if (window.confirm(`清空 r${version.revision} 的执行记录并重新开始？`)) store.restartRun(runKey);
+  }
+
+  return (
+    <div className="content-page execute-page">
+      <Heading size="7">执行检查单</Heading>
+      <Text color="gray" as="p">按飞行阶段顺序逐项确认；前置条件未完成的检查项会被挡住，跳过必须填写原因。执行记录按版本单独保存在浏览器本地，关闭后再次打开可继续，创建新修订不会继承。</Text>
+
+      <div className="execute-toolbar">
+        <label>
+          <span>执行版本（仅冻结版本）</span>
+          <Select.Root value={version.key} onValueChange={onVersionChange}>
+            <Select.Trigger variant="soft" aria-label="选择要执行的冻结版本" />
+            <Select.Content position="popper">
+              {versions.map((entry) => <Select.Item key={entry.key} value={entry.key}>{entry.label}</Select.Item>)}
+            </Select.Content>
+          </Select.Root>
+        </label>
+        {version.note && <Text size="1" color="gray">版本说明：{version.note}</Text>}
+      </div>
+
+      <Card className="execute-progress">
+        <Flex justify="between" align="center" gap="3" wrap="wrap">
+          <div>
+            <strong>已完成 {doneCount} / {total} 项</strong>
+            <Text size="1" color="gray" as="p">
+              跳过 {skippedCount} 项{run ? ` · 开始于 ${formatTime(run.startedAt)} · 最近记录 ${formatTime(run.updatedAt)}` : ' · 尚未开始，确认第一项后自动建档'}
+            </Text>
+          </div>
+          <Flex gap="2">
+            <Button size="1" variant="soft" disabled={lastDecidedIndex < 0} onClick={revertLast}>回退上一项</Button>
+            <Button size="1" variant="soft" color="red" disabled={!run} onClick={restart}>重新开始</Button>
+          </Flex>
+        </Flex>
+        <Progress value={total ? Math.max(2, ((doneCount + skippedCount) / total) * 100) : 0} color={finished ? 'green' : 'blue'} style={{ marginTop: 10 }} />
+      </Card>
+
+      {finished && (
+        <Callout.Root color="green" mb="3">
+          <Callout.Text>r{version.revision} 已全部执行完毕：完成 {doneCount} 项，跳过 {skippedCount} 项。记录保留在本版本下，可随时回退或重新开始。</Callout.Text>
+        </Callout.Root>
+      )}
+      {total === 0 && <div className="empty-page"><strong>该版本没有检查项</strong><span>此冻结版本不包含任何检查项，请切换其他版本。</span></div>}
+
+      <div className="execute-list">
+        {sortedStages.map((stage, stageIndex) => {
+          const rows = orderedItems.filter((entry) => entry.stage.id === stage.id);
+          const stageDecided = rows.filter(({ item }) => entries?.[item.id]).length;
+          return (
+            <Card key={stage.id} className="execute-stage-card">
+              <div className="execute-stage-head">
+                <Flex align="center" gap="2">
+                  <span className="sequence-chip">{stageIndex + 1}</span>
+                  <div><strong>{stage.name}</strong>{stage.description && <Text size="1" color="gray" as="p">{stage.description}</Text>}</div>
+                </Flex>
+                <Badge variant="soft" color={rows.length > 0 && stageDecided === rows.length ? 'green' : 'gray'}>{stageDecided}/{rows.length}</Badge>
+              </div>
+              <div className="execute-items">
+                {rows.map(({ item }, rowIndex) => {
+                  const entry = entries?.[item.id];
+                  const isCurrent = current?.item.id === item.id;
+                  const state = entry ? entry.status : isCurrent ? 'current' : 'pending';
+                  const preconditions = item.preconditionIds
+                    .map((id) => version.items.find((candidate) => candidate.id === id))
+                    .filter((candidate): candidate is ChecklistItem => Boolean(candidate));
+                  return (
+                    <article key={item.id} className={`execute-item ${state}`}>
+                      <span className="execute-status">{entry ? (entry.status === 'done' ? '✓' : '↷') : isCurrent ? '→' : rowIndex + 1}</span>
+                      <div className="execute-item-copy">
+                        <Flex gap="2" align="center" wrap="wrap">
+                          <strong>{item.challenge || '未命名检查项'}</strong>
+                          {item.critical && <Badge color="red" size="1">关键</Badge>}
+                          <span className="execute-response">{item.response || '未填写回应'}</span>
+                        </Flex>
+                        {entry && <span className="execute-meta">{entry.status === 'done' ? '完成于' : '跳过于'} {formatTime(entry.at)}</span>}
+                        {entry?.status === 'skipped' && <span className="skip-reason">跳过原因：{entry.reason}</span>}
+                        {isCurrent && item.abnormalProcedure && <span className="execute-meta">异常处置：{item.abnormalProcedure}</span>}
+                        {isCurrent && preconditions.length > 0 && (
+                          <div className="execute-preconditions">
+                            {preconditions.map((precondition) => {
+                              const preconditionEntry = entries?.[precondition.id];
+                              const label = preconditionEntry?.status === 'done' ? '已完成' : preconditionEntry?.status === 'skipped' ? '已跳过' : '待执行';
+                              return <Badge key={precondition.id} size="1" variant="soft" color={preconditionEntry?.status === 'done' ? 'green' : 'amber'}>前置 · {precondition.challenge} · {label}</Badge>;
+                            })}
+                          </div>
+                        )}
+                        {isCurrent && (
+                          <div className="execute-actions">
+                            {blocked && (
+                              <Callout.Root color="amber" size="1">
+                                <Callout.Text>前置条件未完成：{unmetPreconditions.map((precondition) => precondition.challenge).join('、')}。无法确认完成本项，可填写原因跳过。</Callout.Text>
+                              </Callout.Root>
+                            )}
+                            {skipOpen ? (
+                              <div className="skip-form">
+                                <TextArea autoFocus value={skipReason} onChange={(event) => setSkipReason(event.target.value)} placeholder="跳过原因（必填），如：设备故障、管制指令变更、本场不适用" />
+                                <Flex gap="2">
+                                  <Button size="2" color="amber" disabled={!skipReason.trim()} onClick={confirmSkip}>确认跳过</Button>
+                                  <Button size="2" variant="soft" onClick={() => { setSkipOpen(false); setSkipReason(''); }}>取消</Button>
+                                </Flex>
+                              </div>
+                            ) : (
+                              <Flex gap="2">
+                                <Button size="2" color="green" disabled={blocked} onClick={confirmCurrent}>确认完成</Button>
+                                <Button size="2" variant="soft" color="amber" onClick={() => setSkipOpen(true)}>跳过本项</Button>
+                              </Flex>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </article>
+                  );
+                })}
+                {!rows.length && <div className="execute-empty-stage">本阶段没有检查项</div>}
+              </div>
+            </Card>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
