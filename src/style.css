@@ -120,6 +120,22 @@ kbd { border: 1px solid var(--gray-a7); border-bottom-width: 2px; border-radius:
 .help-list { display: grid; gap: 12px; margin-top: 18px; }
 .help-list div { display: grid; grid-template-columns: 150px 1fr; align-items: center; gap: 12px; font-size: 12px; }
 .help-list kbd { justify-self: start; }
+.run-header { position: sticky; top: 151px; z-index: 20; }
+.run-list { display: grid; gap: 13px; margin-top: 14px; }
+.run-stage-title { min-width: 0; }
+.run-stage-title strong { display: block; font-size: 13px; }
+.run-stage-title small { display: block; margin-top: 2px; color: var(--gray-10); font-size: 11px; }
+.run-row { display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--gray-a4); }
+.run-row:last-child { border-bottom: 0; }
+.run-index { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 9px; background: var(--gray-a4); color: var(--gray-11); font-size: 11px; font-weight: 800; }
+.run-done .run-index { background: var(--green-9); color: #fff; }
+.run-skipped .run-index { background: var(--amber-9); color: #fff; }
+.run-current { background: var(--accent-a3); box-shadow: inset 3px 0 0 var(--accent-9); }
+.run-locked { opacity: .55; }
+.run-skip-note { color: var(--amber-11); }
+.run-actions { display: grid; gap: 10px; margin-top: 10px; }
+.run-locked-hint { color: var(--gray-9); }
+.run-empty-stage { padding: 18px 14px; color: var(--gray-9); font-size: 12px; }
 
 @media (max-width: 1320px) {
   .editor-grid { grid-template-columns: 210px minmax(570px, 1fr) 315px; }

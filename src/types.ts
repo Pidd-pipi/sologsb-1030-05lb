@@ -50,6 +50,30 @@ export interface WorkspaceState {
   projects: ChecklistProject[];
 }
 
+export type RunEntryStatus = 'done' | 'skipped';
+
+export interface RunEntry {
+  status: RunEntryStatus;
+  note: string;
+  at: string;
+}
+
+export interface ChecklistRun {
+  key: string;
+  projectId: string;
+  revisionId: string;
+  revision: number;
+  startedAt: string;
+  updatedAt: string;
+  entries: Record<string, RunEntry>;
+  sequence: string[];
+}
+
+export interface RunState {
+  schemaVersion: 1;
+  runs: Record<string, ChecklistRun>;
+}
+
 export interface ValidationIssue {
   id: string;
   type: IssueType;

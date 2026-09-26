@@ -22,6 +22,8 @@ import {
   Tooltip
 } from '@radix-ui/themes';
 import { buildVersionOptions, diffVersions } from './diff';
+import { RunPanel } from './RunPanel';
+import { runKey, useRunStore } from './runs';
 import { useChecklistStore } from './store';
 import type { ChecklistItem, ChecklistProject, IssueLevel, ValidationIssue, WorkflowStatus } from './types';
 import { validateProject } from './validation';
@@ -44,6 +46,7 @@ function escapeHtml(value: string): string {
 
 function App() {
   const store = useChecklistStore();
+  const runStore = useRunStore();
   const project = store.selectedProject;
   const [appearance, setAppearance] = useState<'light' | 'dark'>(() => (localStorage.getItem('sologsb-1030-theme') === 'dark' ? 'dark' : 'light'));
   const [search, setSearch] = useState('');
@@ -58,6 +61,7 @@ function App() {
   const [freezeNote, setFreezeNote] = useState('');
   const [leftVersion, setLeftVersion] = useState('current');
   const [rightVersion, setRightVersion] = useState(project.revisions[0]?.id ?? '');
+  const [runRevisionId, setRunRevisionId] = useState(project.revisions[0]?.id ?? '');
   const [savePulse, setSavePulse] = useState(false);
   const challengeRef = useRef<HTMLInputElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -68,6 +72,9 @@ function App() {
   const selectedItem = project.items.find((item) => item.id === selectedItemId);
   const versionOptions = useMemo(() => buildVersionOptions(project), [project]);
   const diffEntries = useMemo(() => diffVersions(project, leftVersion, rightVersion), [project, leftVersion, rightVersion]);
+  const runRevision = project.revisions.find((entry) => entry.id === runRevisionId) ?? project.revisions[0];
+  const activeRun = runRevision ? runStore.runState.runs[runKey(project.id, runRevision.id)] : undefined;
+  const runAnswered = activeRun ? Object.keys(activeRun.entries).length : 0;
   const filteredStages = useMemo(() => {
     const query = search.trim().toLocaleLowerCase('zh-CN');
     return project.stages
@@ -88,7 +95,8 @@ function App() {
     if (!project.stages.some((stage) => stage.id === quickStageId)) setQuickStageId(project.stages[0]?.id ?? '');
     if (!versionOptions.some((option) => option.id === leftVersion)) setLeftVersion('current');
     if (!versionOptions.some((option) => option.id === rightVersion)) setRightVersion(versionOptions[1]?.id ?? '');
-  }, [project.id, project.items, project.stages, project.revision, selectedItemId, quickStageId, versionOptions, leftVersion, rightVersion]);
+    if (!project.revisions.some((entry) => entry.id === runRevisionId)) setRunRevisionId(project.revisions[0]?.id ?? '');
+  }, [project.id, project.items, project.stages, project.revision, project.revisions, selectedItemId, quickStageId, versionOptions, leftVersion, rightVersion, runRevisionId]);
 
   useEffect(() => {
     localStorage.setItem('sologsb-1030-theme', appearance);
@@ -248,6 +256,7 @@ function App() {
           <Tabs.Root value={activeTab} onValueChange={setActiveTab}>
             <Tabs.List className="main-tabs">
               <Tabs.Trigger value="editor">编辑清单</Tabs.Trigger>
+              <Tabs.Trigger value="run">执行检查单 {runRevision && <Badge size="1" variant="soft" color={activeRun && runAnswered === runRevision.items.length ? 'green' : 'blue'}>{runAnswered}/{runRevision.items.length}</Badge>}</Tabs.Trigger>
               <Tabs.Trigger value="versions">版本差异 <Badge size="1" variant="soft">{project.revisions.length}</Badge></Tabs.Trigger>
               <Tabs.Trigger value="print">打印预览</Tabs.Trigger>
             </Tabs.List>
@@ -407,6 +416,10 @@ function App() {
                   </ScrollArea>
                 </aside>
               </div>
+            </Tabs.Content>
+
+            <Tabs.Content value="run">
+              <RunPanel project={project} revisionId={runRevisionId} onRevisionChange={setRunRevisionId} runStore={runStore} />
             </Tabs.Content>
 
             <Tabs.Content value="versions">
